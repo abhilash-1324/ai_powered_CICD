@@ -1,0 +1,7 @@
+{
+  "name":"sre-autopilot-copilot-sdk-mvp","version":"1.0.0","private":true,"type":"module",
+  "scripts":{"build":"tsc","test":"node --test","analyze":"tsx src/analyze.ts"},
+  "engines":{"node":">=20"},
+  "dependencies":{"@github/copilot-sdk":"1.0.34"},
+  "devDependencies":{"@types/node":"^22.0.0","tsx":"^4.20.0","typescript":"^5.8.0"}
+}

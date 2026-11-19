@@ -1,0 +1,76 @@
+name: SRE Autopilot Copilot SDK MVP
+on:
+  push: {branches: [main]}
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      simulate_failure: {description: Simulate Helm validation failure, required: false, type: boolean, default: false}
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v7
+        with: {node-version: '22', cache: npm}
+      - run: npm ci
+      - run: npm test 2>&1 | tee test.log
+      - if: always()
+        run: mkdir -p evidence && cp test.log evidence/ || true
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with: {name: evidence-test, path: evidence, retention-days: 3}
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with: {fetch-depth: 2}
+      - name: Build container
+        run: docker build -t sre-demo:${{ github.sha }} . 2>&1 | tee build.log
+      - name: Helm validation
+        shell: bash
+        run: |
+          set -o pipefail
+          if [[ "${{ inputs.simulate_failure }}" == "true" ]]; then
+            echo 'ERROR: invalid Kubernetes memory quantity INVALID' | tee helm.log
+            exit 1
+          fi
+          helm lint helm/sre-demo 2>&1 | tee helm.log
+          helm template sre-demo helm/sre-demo >> helm.log
+      - if: always()
+        run: mkdir -p evidence; cp build.log helm.log evidence/ 2>/dev/null || true; git show --stat --oneline HEAD > evidence/change.txt
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with: {name: evidence-build, path: evidence, retention-days: 3}
+  sre-analysis:
+    name: Run-specific SDK analysis
+    if: always()
+    needs: [test, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      copilot-requests: write
+    steps:
+      - uses: actions/checkout@v6
+        with: {fetch-depth: 2}
+      - uses: actions/setup-node@v7
+        with: {node-version: '22', cache: npm}
+      - run: npm ci
+      - uses: actions/download-artifact@v4
+        with: {pattern: evidence-*, path: evidence, merge-multiple: true}
+      - name: Analyze with GitHub Copilot SDK
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          COPILOT_GITHUB_TOKEN: ${{ github.token }}
+          NEEDS_JSON: ${{ toJSON(needs) }}
+          EVIDENCE_DIR: evidence
+        run: npm run analyze
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sre-autopilot-sdk-report-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            reports/analysis.md
+            reports/evidence.txt
+          retention-days: 14
