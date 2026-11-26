@@ -4,5 +4,6 @@ node_modules
 todo-app/target
 reports
 evidence
+sonar-report
 *.log
 .env

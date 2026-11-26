@@ -32,14 +32,13 @@ Run the Java tests with `mvn -f todo-app/pom.xml test`. The repository's existin
 
 Push to `main`, open a pull request, or run **Actions -> SRE Autopilot Copilot SDK MVP** manually. The workflow tests the Java app and existing SDK, builds the Docker image, and lints/renders the Helm chart. It does not publish an image or deploy to a cluster.
 
-### Optional SonarQube scan
+### SonarQube Java static analysis
 
-The Java scan runs when both of these are configured in the GitHub repository:
+Every workflow run compiles the Java application and runs SonarScanner CLI against a temporary SonarQube Community Build container on the runner. No SonarQube account, server, repository variable, or repository secret is required. The job starts the server bound to localhost, changes its initial administrator password, and generates a temporary analysis token; the container and its credentials are discarded at the end of the run. The job needs Docker and internet access to download the container images and Java dependencies. On the GitHub-hosted Linux runner it raises `vm.max_map_count` if necessary for SonarQube's embedded Elasticsearch.
 
-- Repository variable `SONAR_HOST_URL`: URL reachable from the GitHub Actions runner for your SonarQube server.
-- Repository secret `SONAR_TOKEN`: token with permission to analyze the project.
+The scanner analyzes the Java application and tests using the compiled classes and dependencies. A failed scan or failed SonarQube quality gate fails the job. Download the `sonarqube-report-RUN_ID-ATTEMPT` artifact for issue details and the quality gate result. Reports can contain source paths and issue messages, so treat them as repository-sensitive. Only a short scan summary is passed to the existing SRE analysis job.
 
-Optionally set repository variable `SONAR_PROJECT_KEY`; otherwise the workflow derives a key from the repository name. If the URL or token is missing, the scan is skipped with a note in the workflow summary. If configured but unreachable or invalid, the scan fails visibly. For a private/self-hosted SonarQube runtime, the hosted runner must have network access to that instance.
+The server is fresh on each run: results and quality profiles aren't retained between runs, and the default quality gate has no historical baseline. This is static analysis, not monitoring of the running Java application.
 
 The workflow also keeps the existing Copilot SDK SRE analysis job. It needs GitHub Actions Copilot request access; if Copilot isn't available, the analyzer publishes its deterministic fallback report.
 

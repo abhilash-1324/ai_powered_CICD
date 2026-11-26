@@ -28,41 +28,49 @@ jobs:
         run: |
           set -o pipefail
           mvn -B -f todo-app/pom.xml test 2>&1 | tee test.log
-      - name: Configure SonarQube scan
-        id: sonar-config
-        env:
-          SONAR_HOST_URL: ${{ vars.SONAR_HOST_URL }}
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-          SONAR_PROJECT_KEY: ${{ vars.SONAR_PROJECT_KEY }}
-        shell: bash
-        run: |
-          if [[ -n "$SONAR_HOST_URL" && -n "$SONAR_TOKEN" ]]; then
-            project_key="${SONAR_PROJECT_KEY:-${GITHUB_REPOSITORY//\//-}}"
-            echo "enabled=true" >> "$GITHUB_OUTPUT"
-            echo "project_key=$project_key" >> "$GITHUB_OUTPUT"
-          else
-            echo "enabled=false" >> "$GITHUB_OUTPUT"
-            echo "SonarQube scan skipped: configure repository variable SONAR_HOST_URL and secret SONAR_TOKEN." >> "$GITHUB_STEP_SUMMARY"
-          fi
-      - name: Scan with SonarQube
-        if: ${{ steps.sonar-config.outputs.enabled == 'true' }}
-        uses: SonarSource/sonarqube-scan-action@v6
-        env:
-          SONAR_HOST_URL: ${{ vars.SONAR_HOST_URL }}
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-        with:
-          args: >-
-            -Dsonar.projectKey=${{ steps.sonar-config.outputs.project_key }}
-            -Dsonar.sources=todo-app/src/main/java
-            -Dsonar.tests=todo-app/src/test/java
-            -Dsonar.java.binaries=todo-app/target/classes
-            -Dsonar.junit.reportPaths=todo-app/target/surefire-reports
-            -Dsonar.sourceEncoding=UTF-8
       - if: always()
         run: mkdir -p evidence && cp test.log evidence/ 2>/dev/null || true
       - if: always()
         uses: actions/upload-artifact@v4
         with: {name: evidence-test, path: evidence, if-no-files-found: ignore, retention-days: 3}
+  sonar:
+    name: SonarQube Java static analysis
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+      - name: Compile Java and collect dependencies
+        run: mvn -B -f todo-app/pom.xml test-compile dependency:copy-dependencies
+      - name: Configure SonarQube kernel requirement
+        run: |
+          current=$(sysctl -n vm.max_map_count)
+          if [ "$current" -lt 524288 ]; then
+            sudo sysctl -w vm.max_map_count=524288
+          fi
+      - name: Run SonarScanner CLI against temporary SonarQube
+        shell: bash
+        run: bash scripts/sonarqube-scan.sh
+      - name: Upload SonarQube report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sonarqube-report-${{ github.run_id }}-${{ github.run_attempt }}
+          path: sonar-report/
+          if-no-files-found: ignore
+          retention-days: 14
+      - name: Upload SonarQube evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: evidence-sonar
+          path: evidence/sonar-summary.txt
+          if-no-files-found: ignore
+          retention-days: 3
   build:
     name: Build container and validate AKS chart
     runs-on: ubuntu-latest
@@ -95,7 +103,7 @@ jobs:
   sre-analysis:
     name: Run-specific SDK analysis
     if: always()
-    needs: [test, build]
+    needs: [test, build, sonar]
     runs-on: ubuntu-latest
     permissions:
       contents: read

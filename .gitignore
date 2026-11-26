@@ -2,5 +2,6 @@ node_modules/
 dist/
 reports/
 evidence/
+sonar-report/
 *.log
 todo-app/target/
