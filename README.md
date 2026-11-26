@@ -1,79 +1,78 @@
-# SRE Autopilot MVP using GitHub Copilot SDK
+# Todo List app with AKS build pipeline
 
-This package replaces direct Copilot CLI invocation with the TypeScript `@github/copilot-sdk`. GitHub Actions remains the runtime and UI. There is no portal, database, Kubernetes cluster, external service, or PAT required for the included demo.
+This repository contains a Java 21 / Spring Boot Todo List app, a Docker image build, an AKS-ready Helm chart, and the existing GitHub Actions SRE analysis demo. The Todo app has no login or authentication. Its in-memory data is cleared whenever the app restarts, including when AKS replaces its pod.
 
-## Architecture
-`test/build jobs -> evidence artifacts -> final job with if: always() -> Copilot SDK session -> GitHub run summary + report artifact`
+## Run locally
 
-The SDK session is read-only. A pre-tool hook denies every tool call, so Copilot can reason only over the bounded evidence passed in the prompt. No fix is applied.
+Prerequisites: Java 21 and Maven 3.9+.
 
-## Prerequisites
-1. GitHub repository with Actions enabled.
-2. GitHub Copilot enabled for the organization/user.
-3. Organization policy **Allow use of Copilot CLI billed to the organization** enabled. The SDK uses the bundled Copilot runtime.
-4. Workflow permission `copilot-requests: write` allowed by enterprise/organization policy.
-5. Actions allow-list permits `actions/checkout@v6`, `actions/setup-node@v7`, `actions/upload-artifact@v4`, and `actions/download-artifact@v4`.
-
-## Deploy
-```bash
-unzip sre-autopilot-copilot-sdk-mvp.zip
-cd sre-autopilot-copilot-sdk-mvp
-git init
-git add .
-git commit -m "Add SDK-based SRE Autopilot MVP"
-git branch -M main
-git remote add origin https://github.com/YOUR_ORG/sre-autopilot-copilot-sdk-mvp.git
-git push -u origin main
+```powershell
+mvn -f todo-app/pom.xml spring-boot:run
 ```
 
-No repository secret is required. The analysis job grants `copilot-requests: write` and passes the built-in `${{ github.token }}` as both `GITHUB_TOKEN` and `COPILOT_GITHUB_TOKEN` for runtime compatibility.
+Open <http://localhost:8080>. The REST API is available at `/api/todos`:
 
-## Demo
-1. Open **Actions -> SRE Autopilot Copilot SDK MVP -> Run workflow**.
-2. Run with `simulate_failure=false` for a healthy report.
-3. Run with `simulate_failure=true`. The build job records a controlled Helm failure.
-4. Open the workflow run summary. The report identifies repository, run, attempt, commit, actor, outcome, RCA, evidence, recommendation and approval risk.
-5. Download `sre-autopilot-sdk-report-RUN_ID-ATTEMPT` for `analysis.md` and redacted `evidence.txt`.
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/api/todos` | List todos |
+| GET | `/api/todos/{id}` | Get one todo |
+| POST | `/api/todos` | Create a todo |
+| PUT | `/api/todos/{id}` | Update title/completion |
+| DELETE | `/api/todos/{id}` | Delete a todo |
 
-If organization policy or Copilot authentication is unavailable, the analyzer catches the SDK error and publishes a deterministic fallback, instead of hiding the original pipeline result.
+Create/update JSON requires a non-blank title of at most 200 characters, for example:
 
-## Security controls
-- Evidence only: all SDK tool calls are denied by `onPreToolUse`.
-- No autonomous remediation.
-- Evidence capped at roughly 150 KB; each file contributes at most its last 20 KB.
-- Common token/password/private-key patterns are redacted before prompting.
-- Artifacts expire after 3/14 days.
-- Fork PRs should be treated as untrusted; keep the SDK analysis job disabled or fallback-only if organization policy does not authorize Copilot requests for forks.
-- Never collect `.env`, kubeconfig, tokens, private keys, full environment dumps, customer data, or unbounded logs.
-
-## Integrate with any existing pipeline
-Copy `src/analyze.ts`, `runbooks`, `package.json`, `package-lock.json`, and the final `sre-analysis` job. Add small `evidence-*` uploads to upstream jobs with `if: always()`. Update `needs: [...]` to include all pipeline jobs. Keep analysis permissions limited to:
-
-```yaml
-permissions:
-  contents: read
-  copilot-requests: write
+```json
+{"title":"Try the Todo app","completed":false}
 ```
 
-Recommended evidence consists of test summaries, scanner results, Helm output, rollout status, selected Kubernetes events, and the last 200-500 relevant log lines.
+Run the Java tests with `mvn -f todo-app/pom.xml test`. The repository's existing Node SDK tests run with `npm ci` followed by `npm test`.
 
-## Real Kubernetes/OpenShift collection
-Use workload identity/OIDC and namespace-scoped read-only RBAC. Add to the deployment job under `if: always()`:
+## GitHub Actions
 
-```bash
-kubectl get pods -n "$NAMESPACE" -o wide > evidence/pods.txt 2>&1 || true
-kubectl get events -n "$NAMESPACE" --sort-by=.lastTimestamp | tail -n 200 > evidence/events.txt 2>&1 || true
-kubectl rollout status deployment/"$APP" -n "$NAMESPACE" --timeout=90s > evidence/rollout.txt 2>&1 || true
+Push to `main`, open a pull request, or run **Actions -> SRE Autopilot Copilot SDK MVP** manually. The workflow tests the Java app and existing SDK, builds the Docker image, and lints/renders the Helm chart. It does not publish an image or deploy to a cluster.
+
+### Optional SonarQube scan
+
+The Java scan runs when both of these are configured in the GitHub repository:
+
+- Repository variable `SONAR_HOST_URL`: URL reachable from the GitHub Actions runner for your SonarQube server.
+- Repository secret `SONAR_TOKEN`: token with permission to analyze the project.
+
+Optionally set repository variable `SONAR_PROJECT_KEY`; otherwise the workflow derives a key from the repository name. If the URL or token is missing, the scan is skipped with a note in the workflow summary. If configured but unreachable or invalid, the scan fails visibly. For a private/self-hosted SonarQube runtime, the hosted runner must have network access to that instance.
+
+The workflow also keeps the existing Copilot SDK SRE analysis job. It needs GitHub Actions Copilot request access; if Copilot isn't available, the analyzer publishes its deterministic fallback report.
+
+## Build and deploy to AKS
+
+The root `Dockerfile` builds the Spring Boot application into a non-root Java 21 container. The chart at `helm/todo-app` defaults to an internal `ClusterIP` service and includes health probes and resource requests/limits.
+
+Build and push the image to an Azure Container Registry (ACR):
+
+```powershell
+az acr build --registry <ACR_NAME> --image todo-app:<TAG> .
 ```
 
-Do not store a long-lived kubeconfig. If remediation is added later, place it in a separate workflow protected by GitHub Environments approval.
+If the AKS cluster does not already have pull permission for the registry, grant it:
 
-## Validation performed on this package
-- `npm ci`
-- TypeScript compilation with strict mode
-- Node test execution
-- Local deterministic-fallback execution
-- ZIP integrity test
+```powershell
+az aks update --resource-group <AKS_RESOURCE_GROUP> --name <AKS_CLUSTER> --attach-acr <ACR_NAME>
+az aks get-credentials --resource-group <AKS_RESOURCE_GROUP> --name <AKS_CLUSTER>
+```
 
-## Production hardening
-Pin action versions to immutable SHAs, centralize/version the analyzer, add JSON-schema output validation, add repository-specific failure taxonomy/runbooks, and record reviewer feedback on RCA accuracy. Keep mutation outside the agent session and behind environment approval.
+Install or update the app, substituting your ACR login server (for example `myregistry.azurecr.io`) and image tag:
+
+```powershell
+helm upgrade --install todo-app helm/todo-app `
+  --namespace todo-app --create-namespace `
+  --set image.repository=<ACR_LOGIN_SERVER>/todo-app `
+  --set image.tag=<TAG>
+
+kubectl port-forward --namespace todo-app service/todo-app 8080:80
+```
+
+Open <http://localhost:8080>. Port-forwarding keeps this unauthenticated demo private. If you choose a public `LoadBalancer` service instead, configure network restrictions before exposing it; anyone who can reach the app can view and change its todos.
+
+## Existing SRE analyzer
+
+The workflow gathers bounded test/build evidence and runs the existing read-only Copilot SDK analyzer. It does not apply fixes or deploy workloads. Its analysis can fall back deterministically when Copilot Actions access is unavailable.

@@ -3,3 +3,4 @@ dist/
 reports/
 evidence/
 *.log
+todo-app/target/

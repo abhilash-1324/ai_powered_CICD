@@ -9,40 +9,89 @@ permissions:
   contents: read
 jobs:
   test:
+    name: Test Java app and SDK
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v7
         with: {node-version: '22', cache: npm}
       - run: npm ci
-      - run: npm test 2>&1 | tee test.log
+      - name: Test existing SDK
+        run: npm test
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+      - name: Test Java todo app
+        shell: bash
+        run: |
+          set -o pipefail
+          mvn -B -f todo-app/pom.xml test 2>&1 | tee test.log
+      - name: Configure SonarQube scan
+        id: sonar-config
+        env:
+          SONAR_HOST_URL: ${{ vars.SONAR_HOST_URL }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_PROJECT_KEY: ${{ vars.SONAR_PROJECT_KEY }}
+        shell: bash
+        run: |
+          if [[ -n "$SONAR_HOST_URL" && -n "$SONAR_TOKEN" ]]; then
+            project_key="${SONAR_PROJECT_KEY:-${GITHUB_REPOSITORY//\//-}}"
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+            echo "project_key=$project_key" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "SonarQube scan skipped: configure repository variable SONAR_HOST_URL and secret SONAR_TOKEN." >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Scan with SonarQube
+        if: ${{ steps.sonar-config.outputs.enabled == 'true' }}
+        uses: SonarSource/sonarqube-scan-action@v6
+        env:
+          SONAR_HOST_URL: ${{ vars.SONAR_HOST_URL }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        with:
+          args: >-
+            -Dsonar.projectKey=${{ steps.sonar-config.outputs.project_key }}
+            -Dsonar.sources=todo-app/src/main/java
+            -Dsonar.tests=todo-app/src/test/java
+            -Dsonar.java.binaries=todo-app/target/classes
+            -Dsonar.junit.reportPaths=todo-app/target/surefire-reports
+            -Dsonar.sourceEncoding=UTF-8
       - if: always()
-        run: mkdir -p evidence && cp test.log evidence/ || true
+        run: mkdir -p evidence && cp test.log evidence/ 2>/dev/null || true
       - if: always()
         uses: actions/upload-artifact@v4
-        with: {name: evidence-test, path: evidence, retention-days: 3}
+        with: {name: evidence-test, path: evidence, if-no-files-found: ignore, retention-days: 3}
   build:
+    name: Build container and validate AKS chart
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
         with: {fetch-depth: 2}
-      - name: Build container
-        run: docker build -t sre-demo:${{ github.sha }} . 2>&1 | tee build.log
-      - name: Helm validation
+      - name: Build todo app container
+        shell: bash
+        run: |
+          set -o pipefail
+          docker build -t todo-app:${{ github.sha }} . 2>&1 | tee build.log
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.16.4
+      - name: Validate Helm chart
         shell: bash
         run: |
           set -o pipefail
           if [[ "${{ inputs.simulate_failure }}" == "true" ]]; then
-            echo 'ERROR: invalid Kubernetes memory quantity INVALID' | tee helm.log
+            echo 'ERROR: simulated Helm validation failure' | tee helm.log
             exit 1
           fi
-          helm lint helm/sre-demo 2>&1 | tee helm.log
-          helm template sre-demo helm/sre-demo >> helm.log
+          helm lint helm/todo-app --set image.repository=todo-app --set image.tag=${{ github.sha }} 2>&1 | tee helm.log
+          helm template todo-app helm/todo-app --set image.repository=todo-app --set image.tag=${{ github.sha }} >> helm.log
       - if: always()
         run: mkdir -p evidence; cp build.log helm.log evidence/ 2>/dev/null || true; git show --stat --oneline HEAD > evidence/change.txt
       - if: always()
         uses: actions/upload-artifact@v4
-        with: {name: evidence-build, path: evidence, retention-days: 3}
+        with: {name: evidence-build, path: evidence, if-no-files-found: ignore, retention-days: 3}
   sre-analysis:
     name: Run-specific SDK analysis
     if: always()
