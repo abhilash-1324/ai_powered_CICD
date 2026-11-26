@@ -52,6 +52,8 @@ jobs:
           if [ "$current" -lt 524288 ]; then
             sudo sysctl -w vm.max_map_count=524288
           fi
+      - name: Test SonarQube setup script
+        run: bash scripts/test-sonarqube-scan.sh
       - name: Run SonarScanner CLI against temporary SonarQube
         shell: bash
         run: bash scripts/sonarqube-scan.sh

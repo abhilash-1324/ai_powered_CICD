@@ -32,13 +32,22 @@ if [[ "$ready" != true ]]; then
   exit 1
 fi
 
-password="$(openssl rand -hex 24)"
+password="Aa1!$(openssl rand -hex 24)"
 echo "::add-mask::$password"
-curl -fsS -u admin:admin -X POST "$server_url/api/users/change_password" \
+echo "Changing the temporary SonarQube administrator password."
+if ! response="$(curl -sS --fail-with-body -u admin:admin -X POST "$server_url/api/users/change_password" \
   --data-urlencode "login=admin" --data-urlencode "previousPassword=admin" \
-  --data-urlencode "password=$password" >/dev/null
-token="$(curl -fsS -u "admin:$password" -X POST "$server_url/api/user_tokens/generate" \
-  --data-urlencode "name=ci-analysis" | jq -er '.token')"
+  --data-urlencode "password=$password")"; then
+  echo "SonarQube password change failed: $response" >&2
+  exit 1
+fi
+echo "Generating a temporary SonarQube analysis token."
+if ! response="$(curl -sS --fail-with-body -u "admin:$password" -X POST "$server_url/api/user_tokens/generate" \
+  --data-urlencode "name=ci-analysis")"; then
+  echo "SonarQube token generation failed: $response" >&2
+  exit 1
+fi
+token="$(jq -er '.token' <<< "$response")"
 echo "::add-mask::$token"
 export SONAR_TOKEN="$token"
 export SONAR_HOST_URL="$server_url"
